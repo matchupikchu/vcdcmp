@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 matchupikchu <matchupikchu99@gmail.com>
 """Generates an example sim.vcd and an hw/ directory with several captures from
 an embedded FPGA logic analyzer: multiplier in_a*in_b -> out_p (latency 2) and
 an accumulator. Captures come in different formats (Intel-style VCD, AMD

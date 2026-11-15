@@ -304,3 +304,12 @@ python3 ../../hdlcov.py verilog -t tb_mac --dut tb_mac.dut --dut-module mac veri
 
 In the coverage example the testbench deliberately does not exercise accumulator saturation,
 so the report shows those lines as untested.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 matchupikchu <matchupikchu99@gmail.com>
+
+The external tools used by `hdlcov.py` (NVC, Covered, Icarus Verilog) are separate programs
+under their own licenses; they are not part of this repository.

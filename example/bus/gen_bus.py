@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 matchupikchu <matchupikchu99@gmail.com>
 """Generates sim.vcd and hw/capture_{1,2}.vcd with four bus interfaces of one DUT:
 AXI4-Stream, Avalon-ST (readyLatency = 1), AXI4 (memory mapped) and Avalon-MM.
 

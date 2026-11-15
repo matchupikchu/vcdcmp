@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 matchupikchu <matchupikchu99@gmail.com>
 """
 hdlcov - RTL code coverage in tests: VHDL via NVC, Verilog via Covered.
 
