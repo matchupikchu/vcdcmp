@@ -1,0 +1,8 @@
+{
+  "sim_clock": "tb.clk",
+  "interfaces": [
+    { "name": "mul_in",  "prefix": "u_mul.in_",  "signed": true },
+    { "name": "mul_out", "prefix": "u_mul.out_", "signed": true },
+    { "name": "acc_out", "prefix": "u_acc.", "valid": "u_mul.out_valid" }
+  ]
+}

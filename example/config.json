@@ -1,0 +1,21 @@
+{
+  "sim_clock": "tb.clk",
+  "interfaces": [
+    {
+      "name": "mul_in",
+      "valid": "u_mul.in_valid",
+      "signed": true,
+      "fields": { "a": "u_mul.in_a", "b": "u_mul.in_b" }
+    },
+    {
+      "name": "mul_out",
+      "valid": "u_mul.out_valid",
+      "fields": { "p": { "signal": "u_mul.out_p", "signed": true, "frac": 0 } }
+    },
+    {
+      "name": "acc_out",
+      "valid": { "sim": "u_mul.out_valid", "stp": "u_mul.out_valid" },
+      "fields": { "acc": "u_acc.acc" }
+    }
+  ]
+}

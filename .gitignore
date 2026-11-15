@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+# pliki generowane przez przykłady
+example/sim.vcd
+example/stp/
+example/*.csv
+example/merged.vcd
+example/coverage/out_*/
+hdlcov_out/
