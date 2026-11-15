@@ -41,10 +41,17 @@ Transaction sequences from the simulation and from the hardware (**HW**) are ali
 - numeric values are compared (signed and fixed-point numbers are supported),
   so different widths or notations (HEX/BIN/DEC) are not a problem.
 
-The report distinguishes transactions with **different values** from transactions that appear
-**only in HW** / **only in SIM** (lost or extra). The summary lists interfaces ordered by the time
-of their first mismatch. In a chain of modules, the earliest one points to the suspect module
-(inputs match, output does not → bug in that module).
+The report lists these kinds of findings:
+
+| Kind | Meaning |
+|---|---|
+| `różnica` (difference) | the same transaction has different values in HW and SIM |
+| `tylko HW` / `tylko SIM` (only in HW / SIM) | a transaction is lost or extra |
+| `pakiet` (packet) | the end-of-packet marker (`tlast`, `endofpacket`) is on a different word in HW than in SIM – too early or too late, and by how many words |
+| `protokół` (protocol) | a protocol rule is broken in HW or in SIM, e.g. `wlast`/`rlast` not on the last beat of a burst, `startofpacket` before the previous `endofpacket` |
+
+The summary lists interfaces ordered by the time of their first mismatch. In a chain of modules,
+the earliest one points to the suspect module (inputs match, output does not → bug in that module).
 
 ### Usage
 
@@ -63,7 +70,7 @@ python3 vcdcmp.py sim.vcd hw/ --clk tb.clk --signed --itf mul_in=u_mul.in_ --itf
 | Option | Description |
 |---|---|
 | `--list` | list signals in VCD/CSV files |
-| `--itf NAME=PREFIX[,HW_PREFIX]` | interface defined by a prefix (repeatable) |
+| `--itf NAME[:PROTOCOL]=PREFIX[,HW_PREFIX]` | interface defined by a prefix, optionally with a bus protocol, e.g. `--itf m0:axi4=u_dut.m_axi_` (repeatable) |
 | `--clk NAME` | simulation clock (instead of `sim_clock`) |
 | `--signed` | fields of `--itf` interfaces are signed numbers |
 | `--edge rise\|fall` | simulation clock edge |
@@ -140,8 +147,64 @@ and in all HW captures are used.
 }
 ```
 
+More keys for an interface (explicit or by prefix):
+
+| Key | Description |
+|---|---|
+| `ready_latency` | data is transferred when `valid == 1` and `ready` was 1 *N* cycles earlier (Avalon-ST `readyLatency`); default 0 |
+| `last`, `sop` | end / start of packet signal – enables packet boundary checks (with `sop`: also start/end pairing) |
+| `by_id` | name of a field (e.g. `"tid"`) – transactions are compared separately for each value of it |
+
+More keys for a field:
+
+| Key | Description |
+|---|---|
+| `byteenable` | signal (or list of signals) with one bit per byte lane – disabled bytes are not compared |
+| `empty` | `{"signal": ..., "eop": ..., "symbol_bits": 8, "high_first": true}` – Avalon-ST style: on the end-of-packet word the last `empty` symbols are not compared |
+| `when` | signal – the field is compared only in words where it is 1 |
+
+**Inverted signals:** prefix any signal name with `!` (or `~`), e.g. `"ready": "!u_dut.avs_waitrequest"`.
+
 Global keys: `sim_clock` (required, or `--clk`), `hw_clock` (if the capture contains a clock –
 usually it does not), `hw_period`. The legacy names `stp`, `stp_clock` and `stp_period` are still accepted.
+
+### Bus protocols
+
+With `"protocol"` and `"prefix"` a single entry describes a whole standard interface. Signal
+names are `<prefix><standard name>` (any case); optional signals that are missing on either side
+are skipped and listed in the output.
+
+```json
+{
+  "sim_clock": "tb.clk",
+  "interfaces": [
+    { "name": "axis", "protocol": "axi4-stream", "prefix": "u_dut.s_axis_" },
+    { "name": "avst", "protocol": "avalon-st",   "prefix": "u_dut.asi_", "ready_latency": 1 },
+    { "name": "axi",  "protocol": "axi4",        "prefix": "u_dut.s_axi_" },
+    { "name": "avmm", "protocol": "avalon-mm",   "prefix": "u_dut.avs_" }
+  ]
+}
+```
+
+| Protocol | Transaction | Signals (required in bold) | Notes |
+|---|---|---|---|
+| `axi4-stream` | one word | **tvalid**, tready, **tdata**, tkeep, tstrb, tlast, tid, tdest, tuser | `tdata` compared only in bytes with `tkeep` (and `tstrb`) = 1; `tlast` checked for packet boundaries; `"by_id": true` compares per `tid` |
+| `avalon-st` | one word | **valid**, ready, **data**, startofpacket, endofpacket, empty, channel, error | `ready_latency`; on the `endofpacket` word the `empty` symbols are not compared (`symbol_bits`, default 8; `first_symbol_in_high_order_bits`, default true); `startofpacket`/`endofpacket` pairing checked; `"by_id": true` compares per `channel` |
+| `axi4` (`axi4-lite`) | whole write: AW + all W beats + B; whole read: AR + all R beats | **awvalid, awaddr, wvalid, wdata** / **arvalid, araddr, rvalid, rdata**; awready, awid, awlen, awsize, awburst, wready, wstrb, wlast, bvalid, bready, bid, bresp, arready, arid, arlen, arsize, arburst, rready, rid, rresp, rlast | creates two interfaces, `<name>.write` and `<name>.read`; write data compared only in bytes with `wstrb` = 1; read data assigned to requests by `rid`, so responses of different IDs may come in any order; `wlast`/`rlast` checked against `awlen`/`arlen`; `"by_id": true` compares each ID separately |
+| `avalon-mm` | whole write or read burst | **address**, read, write, waitrequest, readdata, readdatavalid, writedata, byteenable, burstcount, response, writeresponsevalid, beginbursttransfer | command accepted when `waitrequest` = 0; bursts by `burstcount`; write data compared only in bytes with `byteenable` = 1, read data in bytes enabled by the command; without `readdatavalid` set `read_latency` |
+
+How a capture window that starts in the middle of traffic is handled:
+
+- AXI4: the data stream is cut into bursts at `wlast`/`rlast` and lined up with the
+  `awlen`/`arlen` of the requests in the capture, so data of requests from before the window
+  is skipped. Without `wlast`, W beats before the first AW in the capture are skipped (write data
+  is then assumed not to precede its address). Responses (B, R) without a request in the capture
+  are skipped.
+- Avalon-MM: read data without a command in the capture is skipped. A write burst that is
+  already in progress when the capture starts cannot always be recognized: the first burst is
+  dropped when `write` was held high since the start of the capture. With `beginbursttransfer`
+  bursts are always recognized.
+- Streams: packet numbers in the report are counted from the start of each capture.
 
 ### Notes
 
@@ -227,6 +290,12 @@ cd example
 python3 gen_test.py .            # sim.vcd + hw/capture_1.vcd, capture_2.vcd (Intel style), capture_3.csv (AMD style)
 python3 ../vcdcmp.py config.json sim.vcd hw/          # finds the 1 injected bug in mul_out
 python3 ../vcdcmp.py config_prefix.json sim.vcd hw/   # same, interfaces defined by prefix
+
+cd bus                           # AXI4-Stream, Avalon-ST (readyLatency 1), AXI4, Avalon-MM
+python3 gen_bus.py .             # HW run: other stalls, reordered AXI read responses, garbage in invalid bytes
+python3 ../../vcdcmp.py config.json sim.vcd hw/          # finds exactly the 6 injected bugs
+python3 ../../vcdcmp.py config_generic.json sim.vcd hw/  # the same without protocol templates ("!waitrequest", byteenable)
+cd ..
 
 cd coverage
 python3 ../../hdlcov.py vhdl -t tb_mac --dut tb_mac.dut vhdl/mac.vhd vhdl/tb_mac.vhd

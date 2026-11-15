@@ -1,0 +1,21 @@
+{
+  "sim_clock": "tb.clk",
+  "interfaces": [
+    {
+      "name": "avmm_wr",
+      "valid": "u_dut.avs_write",
+      "ready": "!u_dut.avs_waitrequest",
+      "fields": {
+        "addr": "u_dut.avs_address",
+        "data": { "signal": "u_dut.avs_writedata", "byteenable": "u_dut.avs_byteenable" },
+        "be":   "u_dut.avs_byteenable"
+      }
+    },
+    {
+      "name": "axis_raw",
+      "prefix": "u_dut.s_axis_t",
+      "last": "last",
+      "fields": { "data": { "byteenable": "u_dut.s_axis_tkeep" }, "keep": {} }
+    }
+  ]
+}

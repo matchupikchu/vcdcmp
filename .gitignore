@@ -7,3 +7,5 @@ example/*.csv
 example/merged.vcd
 example/coverage/out_*/
 hdlcov_out/
+example/bus/sim.vcd
+example/bus/hw/

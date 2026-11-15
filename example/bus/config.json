@@ -1,0 +1,9 @@
+{
+  "sim_clock": "tb.clk",
+  "interfaces": [
+    { "name": "axis", "protocol": "axi4-stream", "prefix": "u_dut.s_axis_" },
+    { "name": "avst", "protocol": "avalon-st",   "prefix": "u_dut.asi_", "ready_latency": 1 },
+    { "name": "axi",  "protocol": "axi4",        "prefix": "u_dut.s_axi_" },
+    { "name": "avmm", "protocol": "avalon-mm",   "prefix": "u_dut.avs_" }
+  ]
+}
