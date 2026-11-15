@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Generuje przykładowe sim.vcd i katalog hw/ z kilkoma nagraniami z analizatora
-logicznego w FPGA: mnożarka in_a*in_b -> out_p (latencja 2) i akumulator.
-Nagrania w różnych formatach (VCD w stylu Intel, CSV w stylu AMD Vivado ILA),
-bez zegara, z innymi nazwami niż w symulacji i z jednym celowo błędnym wynikiem."""
+"""Generates an example sim.vcd and an hw/ directory with several captures from
+an embedded FPGA logic analyzer: multiplier in_a*in_b -> out_p (latency 2) and
+an accumulator. Captures come in different formats (Intel-style VCD, AMD
+Vivado ILA-style CSV), have no clock, use different names than the simulation
+and contain one deliberately wrong result."""
 import os
 import random
 import sys
 
 random.seed(1)
 N, LAT = 1000, 2
-WINDOWS = [(50, 64), (300, 128), (700, 100)]   # (od cyklu, liczba próbek) - osobne nagrania HW
+WINDOWS = [(50, 64), (300, 128), (700, 100)]   # (start cycle, number of samples) - separate HW captures
 BAD = 357
 
 
@@ -17,7 +18,7 @@ def b(v, w):
     return format(v & ((1 << w) - 1), '0%db' % w)
 
 
-# stan w kolejnych cyklach (wartości po zboczu)
+# state in consecutive cycles (values after the clock edge)
 cyc = []
 pipe = [(0, 0, 0)] * LAT
 acc = 0
@@ -32,7 +33,7 @@ for c in range(N):
 
 out = sys.argv[1] if len(sys.argv) > 1 else '.'
 
-# ---- symulacja: zegar 10 ns, timescale 1 ps
+# ---- simulation: 10 ns clock, 1 ps timescale
 with open(out + '/sim.vcd', 'w') as f:
     f.write('$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! clk $end\n'
             '$scope module dut $end\n$scope module u_mul $end\n'
@@ -43,17 +44,17 @@ with open(out + '/sim.vcd', 'w') as f:
     f.write('#0\n0!\n0"\nbx #\nbx $\n0%\nb0 &\nb0 \'\n')
     for c, s in enumerate(cyc):
         t = c * 10000
-        f.write('#%d\n1!\n' % t)                      # zbocze narastające
+        f.write('#%d\n1!\n' % t)                      # rising edge
         f.write('#%d\n%d"\nb%s #\nb%s $\n%d%%\nb%s &\nb%s \'\n' % (
             t + 100, s['in_valid'], b(s['a'], 8), b(s['b'], 8), s['out_valid'],
             b(s['p'], 16), b(s['acc'], 20)))
         f.write('#%d\n0!\n' % (t + 5000))
     f.write('#%d\n' % (N * 10000))
 
-# ---- nagrania z analizatora logicznego (HW): próbka k = wartość widziana na zboczu,
-#      czyli stan z cyklu poprzedniego. Dwa formaty, jak u różnych producentów:
-#      VCD z nazwami w stylu Intel (encja:instancja|sygnał, szyna out_p rozbita na bity)
-#      i CSV w stylu AMD Vivado ILA (ścieżki ze '/', wiersz "Radix", wartości HEX).
+# ---- logic analyzer captures (HW): sample k = value seen at the clock edge,
+#      i.e. the state from the previous cycle. Two formats, as with different vendors:
+#      VCD with Intel-style names (entity:instance|signal, out_p bus split into bits)
+#      and AMD Vivado ILA-style CSV (paths with '/', "Radix" row, HEX values).
 os.makedirs(out + '/hw', exist_ok=True)
 
 
@@ -61,7 +62,7 @@ def hw_samples(start, length):
     for k in range(length):
         s = dict(cyc[start + k - 1])
         if start + k - 1 == BAD and s['out_valid']:
-            s['p'] ^= 0x40                                   # błąd "sprzętowy"
+            s['p'] ^= 0x40                                   # "hardware" bug
         yield k, s
 
 

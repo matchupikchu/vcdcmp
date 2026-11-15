@@ -1,111 +1,111 @@
 # vcdcmp
 
-Niezależne od producenta narzędzia do weryfikacji modułów FPGA (np. bloków arytmetycznych):
+Vendor-independent tools for verifying FPGA modules (e.g. arithmetic blocks):
 
-- **`vcdcmp.py`** – porównuje **transakcje na interfejsach modułów** zarejestrowane
-  w symulacji i w sprzęcie przez **wbudowany analizator logiczny** dowolnego producenta.
-  Sprawdza, czy w układzie zaszły te same operacje (operandy, wyniki) co w symulacji.
-- **`hdlcov.py`** – mierzy **pokrycie kodu RTL** w testach (VHDL i Verilog, narzędzia
-  open source) i raportuje nieprzetestowane linie.
+- **`vcdcmp.py`** – compares **transactions on module interfaces** recorded in
+  simulation and in hardware by an **embedded logic analyzer** from any vendor.
+  It checks that the device performed the same operations (operands, results) as the simulation.
+- **`hdlcov.py`** – measures **RTL code coverage** of your tests (VHDL and Verilog, open-source
+  tools) and reports untested lines.
 
-Wymagany Python ≥ 3.8; skrypty nie mają zależności poza biblioteką standardową.
+Requires Python ≥ 3.8; the scripts have no dependencies beyond the standard library.
+
+> Note: the command-line output and help messages are currently in Polish.
 
 ---
 
-## vcdcmp – symulacja vs sprzęt
+## vcdcmp – simulation vs hardware
 
-### Obsługiwane źródła
+### Supported sources
 
-Narzędzie nie zależy od producenta – czyta formaty, do których eksportują wbudowane
-analizatory logiczne:
+The tool is vendor independent. It reads the formats that embedded logic analyzers export to:
 
-| Format | Przykładowe źródła |
+| Format | Example sources |
 |---|---|
-| **VCD** (Value Change Dump) | Intel SignalTap, AMD Vivado ILA (`write_hw_ila_data -vcd_file`), Lattice Reveal, Microchip Identify, symulatory (Questa, Riviera, Xcelium, VCS, Icarus, Verilator, GHDL, NVC) |
-| **CSV** (wiersz = próbka) | AMD Vivado ILA (`write_hw_ila_data -csv_file`), Intel SignalTap, inne analizatory z eksportem tabelarycznym |
+| **VCD** (Value Change Dump) | Intel SignalTap, AMD Vivado ILA (`write_hw_ila_data -vcd_file`), Lattice Reveal, Microchip Identify, simulators (Questa, Riviera, Xcelium, VCS, Icarus, Verilator, GHDL, NVC) |
+| **CSV** (one row = one sample) | AMD Vivado ILA (`write_hw_ila_data -csv_file`), Intel SignalTap, other analyzers with a tabular export |
 
-Konwencje nazw różnych narzędzi są normalizowane, więc te nazwy wskazują ten sam sygnał:
-`tb.dut.u_mul.in_a` (symulacja), `top:u0|mul:u_mul|in_a` (Intel), `u_top/u_mul/in_a[7:0]` (AMD).
-Zakresy szyn mogą mieć postać `[7:0]`, `[7..0]` lub `[3]`. Szyny rozbite przy eksporcie na
-pojedyncze bity (`p[0]` … `p[15]`) są składane z powrotem.
+Naming conventions of different tools are normalized, so all of these refer to the same signal:
+`tb.dut.u_mul.in_a` (simulation), `top:u0|mul:u_mul|in_a` (Intel), `u_top/u_mul/in_a[7:0]` (AMD).
+Bus ranges may be written as `[7:0]`, `[7..0]` or `[3]`. Buses split into individual bits during
+export (`p[0]` … `p[15]`) are reassembled.
 
-### Idea
+### Concept
 
-Transakcja to cykl, w którym `valid == 1` (oraz `ready == 1`, jeśli podano `ready`).
-Z każdej transakcji zapisywane są wartości pól (np. `a`, `b` na wejściu, `p` na wyjściu).
-Sekwencje transakcji z symulacji i ze sprzętu (**HW**) są wyrównywane i porównywane, więc:
+A transaction is a cycle in which `valid == 1` (and `ready == 1`, if `ready` is given).
+The field values (e.g. `a`, `b` on the input, `p` on the output) are recorded for every transaction.
+Transaction sequences from the simulation and from the hardware (**HW**) are aligned and compared, so:
 
-- nie ma znaczenia, w którym miejscu symulacji analizator złapał swoje okno,
-- nazwy sygnałów nie muszą być identyczne (wystarczy wspólna końcówka ścieżki),
-- porównywane są wartości liczbowe (z obsługą liczb ze znakiem i stałoprzecinkowych),
-  więc różne szerokości lub formaty zapisu (HEX/BIN/DEC) nie przeszkadzają.
+- it does not matter where in the simulation the analyzer captured its window,
+- signal names do not have to be identical (a common path suffix is enough),
+- numeric values are compared (signed and fixed-point numbers are supported),
+  so different widths or notations (HEX/BIN/DEC) are not a problem.
 
-Raport rozróżnia transakcje o **różnych wartościach** oraz transakcje występujące
-**tylko w HW** / **tylko w SIM** (zgubione lub nadmiarowe). Podsumowanie podaje interfejsy
-uporządkowane według czasu pierwszej rozbieżności – w łańcuchu modułów najwcześniejsza
-wskazuje podejrzany moduł (wejścia zgodne, wyjście nie → błąd w module).
+The report distinguishes transactions with **different values** from transactions that appear
+**only in HW** / **only in SIM** (lost or extra). The summary lists interfaces ordered by the time
+of their first mismatch. In a chain of modules, the earliest one points to the suspect module
+(inputs match, output does not → bug in that module).
 
-### Użycie
+### Usage
 
 ```bash
-# lista sygnałów w pliku (pomaga napisać konfigurację)
-python3 vcdcmp.py --list nagranie.vcd nagranie.csv
+# list signals in a file (helps write the configuration)
+python3 vcdcmp.py --list capture.vcd capture.csv
 
-# porównanie: konfiguracja + symulacja + nagrania z analizatora
+# compare: configuration + simulation + analyzer captures
 python3 vcdcmp.py config.json sim.vcd hw.vcd
-python3 vcdcmp.py config.json sim.vcd katalog_z_nagraniami/ --merge-out scalony.vcd --csv roznice.csv
+python3 vcdcmp.py config.json sim.vcd captures_dir/ --merge-out merged.vcd --csv diffs.csv
 
-# bez pliku konfiguracji – interfejsy podane prefiksem
+# without a configuration file – interfaces given by prefix
 python3 vcdcmp.py sim.vcd hw/ --clk tb.clk --signed --itf mul_in=u_mul.in_ --itf mul_out=u_mul.out_
 ```
 
-| Opcja | Opis |
+| Option | Description |
 |---|---|
-| `--list` | wypisz sygnały z plików VCD/CSV |
-| `--itf NAZWA=PREFIKS[,PREFIKS_HW]` | interfejs z prefiksu (można powtarzać) |
-| `--clk NAZWA` | zegar w symulacji (zamiast `sim_clock`) |
-| `--signed` | pola interfejsów z `--itf` są liczbami ze znakiem |
-| `--edge rise\|fall` | zbocze zegara symulacji |
-| `--hw-period N` | okres próbkowania nagrań VCD (w jednostkach ich timescale); domyślnie wykrywany |
-| `--radix HEX\|BIN\|DEC\|SIGNED\|OCT` | format wartości w CSV bez wiersza `Radix` (domyślnie HEX) |
-| `--merge-out PLIK` | zapisz wszystkie nagrania HW w jednym pliku VCD |
-| `--csv PLIK` | zapisz wszystkie rozbieżności do pliku CSV |
-| `--max N` | ile rozbieżności wypisać na interfejs (domyślnie 20) |
+| `--list` | list signals in VCD/CSV files |
+| `--itf NAME=PREFIX[,HW_PREFIX]` | interface defined by a prefix (repeatable) |
+| `--clk NAME` | simulation clock (instead of `sim_clock`) |
+| `--signed` | fields of `--itf` interfaces are signed numbers |
+| `--edge rise\|fall` | simulation clock edge |
+| `--hw-period N` | sampling period of VCD captures (in their timescale units); auto-detected by default |
+| `--radix HEX\|BIN\|DEC\|SIGNED\|OCT` | value format in CSV files without a `Radix` row (default HEX) |
+| `--merge-out FILE` | write all HW captures into one VCD file |
+| `--csv FILE` | write all mismatches to a CSV file |
+| `--max N` | how many mismatches to print per interface (default 20) |
 
-Kod wyjścia: `0` – wszystko zgodne, `1` – są rozbieżności, `2` – błąd (np. brak sygnału).
-Dzięki temu narzędzie można wpiąć w skrypty i CI.
+Exit code: `0` – everything matches, `1` – mismatches found, `2` – error (e.g. signal not found).
+This makes it easy to use in scripts and CI.
 
-### Wiele nagrań
+### Multiple captures
 
-Zamiast jednego pliku można podać kilka plików i/lub katalogów. Brane są wszystkie
-`*.vcd` i `*.csv`, sortowane naturalnie (`capture_2` przed `capture_10`); formaty można
-mieszać. Każde nagranie jest wyrównywane do symulacji **osobno**, bo może pochodzić
-z innego miejsca przebiegu albo z innego uruchomienia. Wyniki są łączone w jeden raport.
+Instead of a single file you can pass several files and/or directories. All `*.vcd` and `*.csv`
+files are used, in natural sort order (`capture_2` before `capture_10`), and formats can be mixed.
+Each capture is aligned to the simulation **separately**, because it may come from a different
+part of the run or from a different run altogether. Results are combined into one report.
 
-`--merge-out` zapisuje nagrania jedno za drugim w jednym pliku VCD z dodatkowym sygnałem
-`vcdcmp_segment` (numer nagrania). Plik przydaje się do przeglądania w dowolnej przeglądarce
-przebiegów (np. GTKWave, Surfer); nagrania CSV, które nie mają osi czasu, są w nim
-zapisywane jako 1 próbka = 1 ns.
+`--merge-out` writes the captures one after another into one VCD file with an extra
+`vcdcmp_segment` signal (capture number). Use it to browse captures in any waveform viewer
+(e.g. GTKWave, Surfer). CSV captures have no time axis and are written as 1 sample = 1 ns.
 
-### Format CSV
+### CSV format
 
-- pierwszy wiersz: nazwy sygnałów (ścieżki z `/`, `|` lub `.`, opcjonalnie z zakresem bitów),
-- opcjonalny drugi wiersz `Radix - HEX,BINARY,UNSIGNED,SIGNED,...` (jak w AMD Vivado),
-- kolumny indeksu/czasu (`Sample in Buffer`, `Sample in Window`, `Time`, `TRIGGER`, …) są pomijane,
-- wartości: zgodnie z wierszem `Radix` albo `--radix`; rozpoznawane są też zapisy
-  `0x..`, `0b..`, `..h` i w stylu Verilog (`16'h00ff`); `X`/`Z` są dozwolone,
-- separator `,`, `;` lub tabulator jest wykrywany automatycznie.
+- first row: signal names (paths separated by `/`, `|` or `.`, optionally with a bit range),
+- optional second row `Radix - HEX,BINARY,UNSIGNED,SIGNED,...` (as in AMD Vivado),
+- index/time columns (`Sample in Buffer`, `Sample in Window`, `Time`, `TRIGGER`, …) are skipped,
+- values: according to the `Radix` row or `--radix`. The notations `0x..`, `0b..`, `..h`
+  and Verilog style (`16'h00ff`) are also recognized. `X`/`Z` are allowed,
+- the delimiter (`,`, `;` or tab) is detected automatically.
 
-### Konfiguracja
+### Configuration
 
-Nazwy dopasowywane są **po końcówce ścieżki**. Gdy końcówka pasuje do kilku sygnałów,
-narzędzie wypisze kandydatów i trzeba wtedy podać dłuższą ścieżkę.
+Names are matched **by path suffix**. If a suffix matches several signals, the tool lists
+the candidates; give a longer path in that case.
 
-**Interfejs z prefiksem** (najprościej). Narzędzie samo znajdzie `valid`
-(`valid`, `vld`, `tvalid`, `stb`, `en`, `start`, `done`…), opcjonalnie `ready`
-(`ready`, `rdy`, `tready`), a pozostałe sygnały z prefiksem potraktuje jako pola.
-Zegary i resety (`clk*`, `rst*`, …) są pomijane. Brane są tylko sygnały obecne
-zarówno w symulacji, jak i we wszystkich nagraniach HW.
+**Interface by prefix** (simplest). The tool finds `valid` by itself
+(`valid`, `vld`, `tvalid`, `stb`, `en`, `start`, `done`…), optionally `ready`
+(`ready`, `rdy`, `tready`), and treats the remaining signals with the prefix as fields.
+Clocks and resets (`clk*`, `rst*`, …) are skipped. Only signals present both in the simulation
+and in all HW captures are used.
 
 ```json
 {
@@ -118,15 +118,15 @@ zarówno w symulacji, jak i we wszystkich nagraniach HW.
 }
 ```
 
-| Klucz | Opis |
+| Key | Description |
 |---|---|
-| `prefix` | prefiks nazw (`"u_mul.in_"`) albo `{"sim": "...", "hw": "..."}`, gdy różne |
-| `valid`, `ready` | końcówka po prefiksie (`"vld"`) albo pełna nazwa z innego zakresu (`"u_mul.out_valid"`) |
-| `fields` | opcjonalnie: lista końcówek (`["a", "b"]`) albo `{"a": {"signed": true, "frac": 4}}` |
-| `exclude` | wzorce glob końcówek do pominięcia, np. `["dbg_*"]` |
-| `signed`, `frac` | ustawienia domyślne dla wszystkich pól; `frac` = liczba bitów ułamkowych (format Q) |
+| `prefix` | name prefix (`"u_mul.in_"`), or `{"sim": "...", "hw": "..."}` when they differ |
+| `valid`, `ready` | suffix after the prefix (`"vld"`) or a full name from another scope (`"u_mul.out_valid"`) |
+| `fields` | optional: list of suffixes (`["a", "b"]`) or `{"a": {"signed": true, "frac": 4}}` |
+| `exclude` | glob patterns of suffixes to skip, e.g. `["dbg_*"]` |
+| `signed`, `frac` | defaults for all fields; `frac` = number of fractional bits (Q format) |
 
-**Interfejs jawny** – każdy sygnał podany ręcznie:
+**Explicit interface** – every signal given by hand:
 
 ```json
 {
@@ -140,99 +140,98 @@ zarówno w symulacji, jak i we wszystkich nagraniach HW.
 }
 ```
 
-Klucze globalne: `sim_clock` (wymagany, albo `--clk`), `hw_clock` (jeśli nagranie
-zawiera zegar – zwykle nie zawiera), `hw_period`. Starsze nazwy `stp`, `stp_clock` i `stp_period`
-są nadal akceptowane.
+Global keys: `sim_clock` (required, or `--clk`), `hw_clock` (if the capture contains a clock –
+usually it does not), `hw_period`. The legacy names `stp`, `stp_clock` and `stp_period` are still accepted.
 
-### Uwagi
+### Notes
 
-- Symulacja jest próbkowana tuż przed zboczem zegara (wartość widziana przez przerzutniki),
-  nagranie HW – w jego chwilach próbkowania (VCD) albo co wiersz (CSV).
-- Wartości z X/Z porównywane są jako surowe bity.
-- Przy danych okresowych (np. same zera) wyrównanie może być niejednoznaczne – raport to zaznacza.
-- Formaty natywne analizatorów (np. binarne pliki projektów) nie są czytane – trzeba je
-  wyeksportować do VCD lub CSV w narzędziu producenta.
+- The simulation is sampled just before the clock edge (the value the flip-flops see),
+  HW captures at their sampling points (VCD) or row by row (CSV).
+- Values containing X/Z are compared as raw bits.
+- With periodic data (e.g. all zeros) the alignment may be ambiguous – the report flags this.
+- Native analyzer formats (e.g. binary project files) are not read – export them to VCD or CSV
+  in the vendor's tool.
 
 ---
 
-## hdlcov – pokrycie kodu RTL
+## hdlcov – RTL code coverage
 
-Używa narzędzi open source, niezależnych od producenta FPGA:
+Uses open-source tools that do not depend on the FPGA vendor:
 
-| Język | Symulacja | Pokrycie |
+| Language | Simulation | Coverage |
 |---|---|---|
-| VHDL | [NVC](https://github.com/nickg/nvc) | NVC (instrukcje, gałęzie, wyrażenia, toggle) |
-| Verilog | [Icarus Verilog](https://steveicarus.github.io/iverilog/) albo gotowy VCD z dowolnego symulatora | [Covered](https://covered.sourceforge.net/) (linie, toggle, logika kombinacyjna, FSM) |
+| VHDL | [NVC](https://github.com/nickg/nvc) | NVC (statements, branches, expressions, toggle) |
+| Verilog | [Icarus Verilog](https://steveicarus.github.io/iverilog/) or an existing VCD from any simulator | [Covered](https://covered.sourceforge.net/) (lines, toggle, combinational logic, FSM) |
 
 ```bash
-# VHDL: symulacja testbencha z pomiarem pokrycia tylko dla instancji DUT
+# VHDL: simulate the testbench, collecting coverage only for the DUT instance
 python3 hdlcov.py vhdl -t tb_mac --dut tb_mac.dut rtl/mac.vhd tb/tb_mac.vhd
 
 # Verilog (Icarus Verilog + Covered)
 python3 hdlcov.py verilog -t tb_mac --dut tb_mac.dut --dut-module mac rtl/mac.v tb/tb_mac.v
 
-# Verilog z gotowym VCD (np. z innego symulatora)
+# Verilog with an existing VCD (e.g. from another simulator)
 python3 hdlcov.py verilog -t tb_mac --dut tb_mac.dut --dut-module mac --vcd sim.vcd rtl/mac.v
 
-# raport z istniejącej bazy NVC (np. z przebiegu cocotb z SIM=nvc i --cover)
+# report from an existing NVC database (e.g. from a cocotb run with SIM=nvc and --cover)
 python3 hdlcov.py nvc-db sim_build/cov.ncdb
 ```
 
-Wspólne opcje:
+Common options:
 
-- `-o KATALOG` – katalog wyników (domyślnie `hdlcov_out/`),
-- `--rtl WZORZEC` – które pliki to RTL; domyślnie wszystko poza `tb_*`, `*_tb.*`, `test_*`
-  i katalogami `tb/`, `test/`, `sim/`,
-- `--min PROCENT` – kod wyjścia 1, gdy pokrycie linii RTL jest niższe (do CI).
+- `-o DIR` – output directory (default `hdlcov_out/`),
+- `--rtl PATTERN` – which files are RTL; by default everything except `tb_*`, `*_tb.*`, `test_*`
+  and the `tb/`, `test/`, `sim/` directories,
+- `--min PERCENT` – exit code 1 when RTL line coverage is below this value (for CI).
 
-Opcje dla VHDL: `--std`, `-g NAZWA=WARTOŚĆ`, `--stop-time`. Dla Veriloga: `-D MAKRO`, `--vcd`.
+VHDL options: `--std`, `-g NAME=VALUE`, `--stop-time`. Verilog options: `-D MACRO`, `--vcd`.
 
-Wyniki (w katalogu `-o`):
+Output (in the `-o` directory):
 
-- `coverage.md` – podsumowanie, pokrycie poszczególnych plików i tabela nieprzetestowanych linii z kodem,
-- `coverage.json` – te same dane do dalszego przetwarzania,
-- NVC: `html/index.html` (szczegółowy raport) i `cobertura.xml` (np. dla GitLab/Jenkins),
-- Covered: `summary.txt` i `details.txt` (pełne raporty) oraz `cov.cdd`,
-- `hdlcov.log` – wszystkie wywołane polecenia i ich wyjście.
+- `coverage.md` – summary, per-file coverage and a table of untested lines with their source,
+- `coverage.json` – the same data for further processing,
+- NVC: `html/index.html` (detailed report) and `cobertura.xml` (e.g. for GitLab/Jenkins),
+- Covered: `summary.txt` and `details.txt` (full reports) plus `cov.cdd`,
+- `hdlcov.log` – every command that was run, with its output.
 
-Rodzaje wpisów na liście nieprzetestowanych linii:
+Entry types in the untested-lines list:
 
-- `nie wykonana` – instrukcja ani razu nie została wykonana,
-- `gałąź N%` – warunek nie przyjął wszystkich wartości,
-- `toggle` – (VHDL) nie wszystkie bity portu lub sygnału przełączyły się 0→1→0.
+- `nie wykonana` (not executed) – the statement never ran,
+- `gałąź N%` (branch N%) – the condition did not take all of its values,
+- `toggle` – (VHDL) not all bits of a port or signal toggled 0→1→0.
 
-### Instalacja narzędzi
+### Installing the tools
 
 Debian/Ubuntu:
 
 ```bash
 sudo apt install covered iverilog
-# NVC: pakiet z https://github.com/nickg/nvc/releases (są też wersje dla Windows i macOS)
+# NVC: package from https://github.com/nickg/nvc/releases (Windows and macOS builds are also available)
 sudo apt install ./nvc_*_amd64_ubuntu-24.04.deb
 ```
 
-Bez uprawnień administratora można rozpakować pakiety lokalnie (`apt-get download …`,
-`dpkg -x pakiet.deb ~/tools/…`) i wskazać pliki wykonywalne zmiennymi środowiskowymi
-`HDLCOV_NVC`, `HDLCOV_COVERED`, `HDLCOV_IVERILOG` i `HDLCOV_VVP`. `hdlcov.py` szuka narzędzi
-kolejno: w tych zmiennych, w `PATH` i w `~/tools/bin`.
+Without administrator rights you can unpack the packages locally (`apt-get download …`,
+`dpkg -x package.deb ~/tools/…`) and point to the executables with the environment variables
+`HDLCOV_NVC`, `HDLCOV_COVERED`, `HDLCOV_IVERILOG` and `HDLCOV_VVP`. `hdlcov.py` looks for the tools
+in these variables first, then in `PATH`, then in `~/tools/bin`.
 
-Covered nie radzi sobie z blokami `$date`/`$version`/`$comment` w VCD, dlatego `hdlcov.py`
-usuwa je automatycznie przed analizą.
+Covered cannot handle `$date`/`$version`/`$comment` blocks in VCD files, so `hdlcov.py`
+strips them automatically before scoring.
 
 ---
 
-## Przykład
+## Example
 
 ```bash
 cd example
-python3 gen_test.py .            # sim.vcd + hw/capture_1.vcd, capture_2.vcd (styl Intel), capture_3.csv (styl AMD)
-python3 ../vcdcmp.py config.json sim.vcd hw/          # wykrywa 1 wstrzyknięty błąd w mul_out
-python3 ../vcdcmp.py config_prefix.json sim.vcd hw/   # to samo, interfejsy z prefiksów
+python3 gen_test.py .            # sim.vcd + hw/capture_1.vcd, capture_2.vcd (Intel style), capture_3.csv (AMD style)
+python3 ../vcdcmp.py config.json sim.vcd hw/          # finds the 1 injected bug in mul_out
+python3 ../vcdcmp.py config_prefix.json sim.vcd hw/   # same, interfaces defined by prefix
 
 cd coverage
 python3 ../../hdlcov.py vhdl -t tb_mac --dut tb_mac.dut vhdl/mac.vhd vhdl/tb_mac.vhd
 python3 ../../hdlcov.py verilog -t tb_mac --dut tb_mac.dut --dut-module mac verilog/mac.v verilog/tb_mac.v
 ```
 
-W przykładzie pokrycia testbench celowo nie sprawdza nasycenia akumulatora, więc raport
-pokazuje te linie jako nieprzetestowane.
+In the coverage example the testbench deliberately does not exercise accumulator saturation,
+so the report shows those lines as untested.

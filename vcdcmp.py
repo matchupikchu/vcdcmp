@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-vcdcmp - porównuje transakcje na interfejsach modułów FPGA zarejestrowane
-w symulacji i w sprzęcie przez wbudowany analizator logiczny (niezależnie od
-producenta: Intel SignalTap, AMD Vivado ILA, Lattice Reveal, Microchip Identify
-i inne - każdy, który eksportuje VCD lub CSV).
+vcdcmp - compares transactions on FPGA module interfaces recorded in
+simulation and in hardware by an embedded logic analyzer (vendor independent:
+Intel SignalTap, AMD Vivado ILA, Lattice Reveal, Microchip Identify and
+others - any tool that exports VCD or CSV).
 
-Transakcja = cykl, w którym valid==1 (i ready==1, jeśli podano ready).
-Z każdej transakcji brane są wartości pól (operandy / wynik). Sekwencje
-transakcji z obu źródeł są wyrównywane i porównywane, niezależnie od tego,
-w którym miejscu symulacji analizator złapał swoje okno.
+Transaction = a cycle in which valid==1 (and ready==1, if ready is given).
+Field values (operands / result) are taken from every transaction. The
+transaction sequences from both sources are aligned and compared, regardless
+of where in the simulation the analyzer captured its window.
 
-Użycie:
-  python3 vcdcmp.py --list plik.vcd|plik.csv
-  python3 vcdcmp.py config.json sim.vcd hw.vcd [--csv roznice.csv]
-  python3 vcdcmp.py config.json sim.vcd katalog_hw/ [--merge-out scalony.vcd]
+Usage:
+  python3 vcdcmp.py --list file.vcd|file.csv
+  python3 vcdcmp.py config.json sim.vcd hw.vcd [--csv diffs.csv]
+  python3 vcdcmp.py config.json sim.vcd hw_dir/ [--merge-out merged.vcd]
 
-Nagrania HW: pliki .vcd/.csv i/lub katalogi z nimi. Każdy plik to osobne
-nagranie (okno analizatora) - jest wyrównywane do symulacji niezależnie,
-a wyniki są łączone w jeden raport. --merge-out zapisuje wszystkie nagrania
-jedno za drugim w jednym pliku VCD (np. do obejrzenia w GTKWave).
+HW captures: .vcd/.csv files and/or directories containing them. Each file is
+a separate capture (analyzer window) - it is aligned to the simulation
+independently and the results are combined into one report. --merge-out writes
+all captures one after another into a single VCD file (e.g. for GTKWave).
 """
 import argparse
 import csv
@@ -40,13 +40,13 @@ NORM = str.maketrans('uwlh-UWLHXZ', 'xx01xxx01xz')
 WILD = set('xz?')
 
 
-# ---------------------------------------------------------------- nazwy
+# ---------------------------------------------------------------- names
 
 def split_parts(s):
     """'top:u0|mul:u_mul|p' / 'u_top/u_mul/p' / 'tb.dut.u_mul.p' -> [..., 'u_mul', 'p']"""
     out = []
     for p in SPLIT_RE.split(s):
-        if ':' in p:                      # np. Intel: encja:instancja
+        if ':' in p:                      # e.g. Intel: entity:instance
             p = p.rsplit(':', 1)[1]
         p = p.strip().lower()
         if p:
@@ -89,11 +89,11 @@ def pad(v, w):
 
 
 class VCD:
-    untimed = False      # True: czas = numer próbki (CSV bez osi czasu)
+    untimed = False      # True: time = sample number (CSV without a time axis)
 
     def __init__(self, fname):
         self.fname = fname
-        self.ts = 1          # fs na jednostkę czasu pliku
+        self.ts = 1          # fs per file time unit
         self.vars = []
         self.tmax = 0
         self._parse()
@@ -175,7 +175,7 @@ class VCD:
                     v.times.append(t)
                     v.values.append(pv)
 
-    # -- wyszukiwanie sygnałów po końcówce ścieżki
+    # -- signal lookup by path suffix
     def find(self, name):
         base, rng = split_range(name)
         q = tuple(split_parts(base))
@@ -191,8 +191,8 @@ class VCD:
         return SigRef(name, hits, rng)
 
     def find_prefix(self, prefix):
-        """'u_mul.in_' -> ['valid', 'a', 'b'] (końcówki nazw sygnałów w jednym zakresie).
-        Prefiks zakończony separatorem ('u_mul.') oznacza wszystkie sygnały w zakresie."""
+        """'u_mul.in_' -> ['valid', 'a', 'b'] (signal name suffixes within one scope).
+        A prefix ending with a separator ('u_mul.') means all signals in that scope."""
         p = prefix.strip()
         parts = tuple(split_parts(p))
         if not p or p[-1] in './|\\':
@@ -227,7 +227,7 @@ class VCD:
         return out
 
     def sample_grid(self, period=None):
-        """Siatka próbek dla pliku bez zegara (typowy eksport analizatora logicznego)."""
+        """Sample grid for a file without a clock (typical logic analyzer export)."""
         times = sorted({t for v in self.vars for t in v.times} | {self.tmax})
         if not times:
             return []
@@ -243,16 +243,16 @@ RADIX = {'HEX': 'hex', 'HEXADECIMAL': 'hex', 'BIN': 'bin', 'BINARY': 'bin', 'UNS
 
 
 def csv_value(s, radix):
-    """Wartość z komórki CSV -> bity ('0101', z x/z) albo liczba całkowita."""
+    """CSV cell value -> bits ('0101', may contain x/z) or an integer."""
     s = s.strip().replace('_', '')
     if not s:
         return 'x'
     low = s.lower()
-    m = re.match(r"^\d*'s?([hbdo])(.*)$", low)            # styl Verilog: 16'h00ff
+    m = re.match(r"^\d*'s?([hbdo])(.*)$", low)            # Verilog style: 16'h00ff
     if m:
         radix, low = {'h': 'hex', 'b': 'bin', 'd': 'dec', 'o': 'oct'}[m.group(1)], m.group(2)
-    elif radix is None and low.startswith('0x'):         # prefiksy tylko gdy radix nieznany
-        radix, low = 'hex', low[2:]                       # (HEX '0B80' to nie binarne '80')
+    elif radix is None and low.startswith('0x'):         # prefixes only when radix is unknown
+        radix, low = 'hex', low[2:]                       # (HEX '0B80' is not binary '80')
     elif radix is None and low.startswith('0b'):
         radix, low = 'bin', low[2:]
     elif radix is None and low.endswith('h'):
@@ -270,9 +270,9 @@ def csv_value(s, radix):
 
 
 class CSVWave(VCD):
-    """Eksport CSV z analizatora logicznego (np. Vivado ILA, SignalTap): wiersz = próbka.
-    Kolumny indeksu (Sample in Buffer, Time, TRIGGER...) są pomijane, opcjonalny wiersz
-    'Radix - HEX,...' (Vivado) określa format wartości; bez niego - radix domyślny."""
+    """CSV export from a logic analyzer (e.g. Vivado ILA, SignalTap): one row = one sample.
+    Index columns (Sample in Buffer, Time, TRIGGER...) are skipped; an optional
+    'Radix - HEX,...' row (Vivado) sets the value format, otherwise the default radix is used."""
     untimed = True
 
     def __init__(self, fname, radix=None):
@@ -344,7 +344,7 @@ def sample_var(v, times, pre):
 
 
 class SigRef:
-    """Sygnał (może składać się z rozbitych bitów, np. p[0]..p[15] z eksportu analizatora)."""
+    """A signal (may consist of split bits, e.g. p[0]..p[15] from an analyzer export)."""
 
     def __init__(self, name, vars_, rng):
         self.name, self.vars = name, vars_
@@ -371,14 +371,14 @@ class SigRef:
         return vals
 
 
-# ---------------------------------------------------------------- wiele plików HW
+# ---------------------------------------------------------------- multiple HW files
 
 def natural_key(s):
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r'(\d+)', s)]
 
 
 def expand_hw(paths):
-    """Pliki i katalogi -> posortowana (naturalnie) lista plików .vcd/.csv."""
+    """Files and directories -> naturally sorted list of .vcd/.csv files."""
     out = []
     for p in paths:
         if os.path.isdir(p):
@@ -405,7 +405,7 @@ def vcd_id(n):
 
 
 def write_merged(vcds, out, gap_samples=10):
-    """Nagrania jedno za drugim w jednym VCD. Sygnał 'vcdcmp_segment' = numer nagrania."""
+    """Captures one after another in a single VCD. Signal 'vcdcmp_segment' = capture number."""
     ts = min(v.ts for v in vcds)
     names = {}
     for v in vcds:
@@ -458,7 +458,7 @@ def write_merged(vcds, out, gap_samples=10):
         f.write('#%d\n' % base)
 
 
-# ---------------------------------------------------------------- konfiguracja
+# ---------------------------------------------------------------- configuration
 
 class Field:
     def __init__(self, name, spec, defaults):
@@ -466,12 +466,12 @@ class Field:
             spec = {'signal': spec}
         self.name = name
         self.sim = spec.get('sim', spec.get('signal'))
-        self.hw = spec.get('hw', spec.get('stp', spec.get('signal')))   # "stp" - stara nazwa
+        self.hw = spec.get('hw', spec.get('stp', spec.get('signal')))   # "stp" - legacy name
         self.signed = spec.get('signed', defaults.get('signed', False))
         self.frac = spec.get('frac', defaults.get('frac', 0))
 
     def key(self, bits):
-        """Wartość porównywana: liczba (niezależna od szerokości) albo surowe bity z X/Z."""
+        """Compared value: a number (width independent) or raw bits when X/Z are present."""
         if any(c in WILD for c in bits):
             return bits
         v = int(bits, 2)
@@ -490,7 +490,7 @@ class Field:
 def side_name(spec, side):
     if spec is None or isinstance(spec, str):
         return spec
-    if side == 'hw' and 'hw' not in spec and 'stp' in spec:      # "stp" - stara nazwa
+    if side == 'hw' and 'hw' not in spec and 'stp' in spec:      # "stp" - legacy name
         side = 'stp'
     return spec.get(side, spec.get('signal'))
 
@@ -515,7 +515,7 @@ class Interface:
             self.fields = [Field(n, s, d) for n, s in d['fields'].items()]
 
     def resolve(self, sim_vcd, hw_vcds):
-        """Tryb prefiksu: znajduje valid/ready/pola wśród sygnałów zaczynających się od prefiksu."""
+        """Prefix mode: finds valid/ready/fields among signals starting with the prefix."""
         if self.prefix is None:
             return
         d = self.d
@@ -527,7 +527,7 @@ class Interface:
         names = [n for n in in_sim if n in common_hw and not any(fnmatch.fnmatch(n, p) for p in skip)]
         given = [side_name(d.get(k), 'sim') for k in ('valid', 'ready')]
 
-        def full(n):          # pełna nazwa (z kropką/kreską) zamiast końcówki po prefiksie
+        def full(n):          # full name (with a dot/bar) instead of a suffix after the prefix
             return isinstance(n, dict) or any(c in n for c in '.|/')
 
         def pick(given, defaults, what, required):
@@ -571,10 +571,10 @@ class Interface:
             '  (pominięte, brak w HW: %s)' % ', '.join(only_sim) if only_sim else ''))
 
 
-# ---------------------------------------------------------------- ekstrakcja
+# ---------------------------------------------------------------- extraction
 
 class Side:
-    """Jeden plik VCD + sposób próbkowania (zegar lub siatka)."""
+    """One waveform file + sampling method (clock or grid)."""
 
     def __init__(self, vcd, side, edge, period):
         self.vcd, self.side, self.edge, self.period = vcd, side, edge, period
@@ -619,17 +619,17 @@ class Txn:
         self.idx, self.time, self.key, self.seg = idx, time, key, seg
 
 
-# ---------------------------------------------------------------- porównanie
+# ---------------------------------------------------------------- comparison
 
 def align(T, S):
-    """Najlepsze przesunięcie k (HW[i] <-> SIM[i+k]) - głosowanie po równych transakcjach."""
+    """Best offset k (HW[i] <-> SIM[i+k]) - voting over equal transactions."""
     index = defaultdict(list)
     for j, s in enumerate(S):
         index[s].append(j)
     votes = Counter()
     for i, t in enumerate(T):
         js = index.get(t, ())
-        if len(js) > 2000:          # bardzo częsta wartość (np. same zera) - mało informacji
+        if len(js) > 2000:          # very frequent value (e.g. all zeros) - little information
             continue
         for j in js:
             votes[j - i] += 1
@@ -670,12 +670,12 @@ def compare(itf, T, S):
             issues.append(('tylko HW', a, None))
         for b in ss[n:]:
             if tag == 'insert' and i1 >= len(T) and i1 >= last_t:
-                continue                # nadmiar okna symulacji za końcem nagrania HW
+                continue                # surplus of the simulation window past the end of the HW capture
             issues.append(('tylko SIM', None, b))
     return res
 
 
-# ---------------------------------------------------------------- raport
+# ---------------------------------------------------------------- report
 
 def fmt_time(t, ts):
     fs = t * ts
@@ -754,7 +754,7 @@ def main():
             ap.error('brak interfejsów - podaj config.json albo --itf NAZWA=PREFIKS')
         itfs = [Interface(d, cfg) for d in defs]
 
-        # 1. scalenie nagrań HW
+        # 1. merge HW captures
         hw_files = expand_hw(files[1:])
         hw_vcds = [load_wave(p, a.radix) for p in hw_files]
         print('== Nagrania HW: %d plik(ów) ==' % len(hw_vcds))
@@ -766,7 +766,7 @@ def main():
             write_merged(hw_vcds, a.merge_out)
             print('   scalony plik: %s' % a.merge_out)
 
-        # 2. porównanie - każde nagranie wyrównywane do symulacji osobno
+        # 2. compare - each capture is aligned to the simulation separately
         sim = Side(load_wave(files[0], a.radix), 'sim', a.edge, None)
         if any(i.prefix is not None for i in itfs):
             print('\n== Interfejsy z prefiksów ==')

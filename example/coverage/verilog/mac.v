@@ -1,4 +1,4 @@
-// MAC z nasyceniem: acc <= sat(acc + a*b). Gałąź nasycenia nie jest testowana w tb.
+// Saturating MAC: acc <= sat(acc + a*b). The saturation branch is not exercised by the tb.
 module mac (
   input  wire               clk, rst,
   input  wire               in_valid,

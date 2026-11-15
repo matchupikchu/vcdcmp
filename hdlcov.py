@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hdlcov - pokrycie kodu RTL w testach: VHDL przez NVC, Verilog przez Covered.
+hdlcov - RTL code coverage in tests: VHDL via NVC, Verilog via Covered.
 
-Uruchamia symulację z pomiarem pokrycia i tworzy raport: podsumowanie
-(linie/instrukcje, gałęzie, toggle, wyrażenia) oraz listę nieprzetestowanych
-linii RTL z ich treścią.
+Runs the simulation with coverage collection and creates a report: summary
+(lines/statements, branches, toggle, expressions) and a list of untested
+RTL lines with their source text.
 
-Użycie:
+Usage:
   python3 hdlcov.py vhdl    -t tb_mac --dut tb_mac.dut  rtl/mac.vhd tb/tb_mac.vhd
   python3 hdlcov.py verilog -t tb_mac --dut tb_mac.dut --dut-module mac  rtl/mac.v tb/tb_mac.v
-  python3 hdlcov.py nvc-db  work/cov.ncdb            # raport z istniejącej bazy NVC (np. z cocotb)
+  python3 hdlcov.py nvc-db  work/cov.ncdb            # report from an existing NVC database (e.g. from cocotb)
 
-Wyniki w katalogu -o (domyślnie hdlcov_out/): coverage.md, coverage.json,
-raport HTML z NVC albo pełne raporty tekstowe z Covered.
+Results in the -o directory (default hdlcov_out/): coverage.md, coverage.json,
+HTML report from NVC or full text reports from Covered.
 """
 import argparse
 import fnmatch
@@ -34,7 +34,7 @@ class ToolError(Exception):
 
 
 def tool(name):
-    """Ścieżka do narzędzia: zmienna HDLCOV_<NAZWA>, PATH, albo ~/tools/bin."""
+    """Path to a tool: HDLCOV_<NAME> variable, PATH, or ~/tools/bin."""
     p = os.environ.get(TOOLS[name]) or shutil.which(name)
     if not p:
         cand = os.path.expanduser('~/tools/bin/' + name)
@@ -83,7 +83,7 @@ NOTE_RE = re.compile(r'\*\* Note:\s+(statement|branch|toggle|expression|FSM stat
 
 
 def nvc_report(ncdb, out, rtl, log):
-    """Raport HTML + eksport Cobertura z bazy NVC -> (podsumowanie, niepokryte)."""
+    """HTML report + Cobertura export from an NVC database -> (summary, files, uncovered)."""
     nvc = tool('nvc')
     txt = run([nvc, '--cover-report', '-o', os.path.join(out, 'html'), ncdb], out, log)
     summary = {}
@@ -106,7 +106,7 @@ def nvc_report(ncdb, out, rtl, log):
             cond = (ln.get('condition-coverage') or '').replace(' ', '')
             code = source_line(path, n)
             if DECL_RE.match(code):
-                # deklaracja portu/sygnału: NVC raportuje tu toggle, a nie wykonanie
+                # port/signal declaration: NVC reports toggle here, not execution
                 if hits == 0:
                     missed.append((path, n, 'toggle', code))
                 continue
@@ -156,7 +156,7 @@ COV_SECTIONS = (('LINE COVERAGE', 'linie'), ('TOGGLE COVERAGE', 'toggle'),
 
 
 def clean_vcd(src, dst):
-    """Covered nie parsuje bloków $date/$version/$comment (np. z Icarusa) - usuwamy je."""
+    """Covered cannot parse $date/$version/$comment blocks (e.g. from Icarus) - strip them."""
     with open(src, encoding='latin-1') as f:
         t = f.read()
     t = re.sub(r'\$(date|version|comment)\b.*?\$end\s*', '', t, flags=re.S)
@@ -218,7 +218,7 @@ def cmd_verilog(a, out, log):
     return summary, files, sorted(set(missed))
 
 
-# ---------------------------------------------------------------- raport
+# ---------------------------------------------------------------- report
 
 def pct(h, t):
     return 100.0 * h / t if t else 100.0
