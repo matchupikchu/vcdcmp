@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Generuje przykładowe sim.vcd i katalog stp/ z kilkoma nagraniami SignalTap:
-mnożarka in_a*in_b -> out_p (latencja 2) i akumulator. W nagraniach: nazwy w stylu
-Quartus, brak zegara, szyna out_p rozbita na bity, jeden celowo błędny wynik."""
+"""Generuje przykładowe sim.vcd i katalog hw/ z kilkoma nagraniami z analizatora
+logicznego w FPGA: mnożarka in_a*in_b -> out_p (latencja 2) i akumulator.
+Nagrania w różnych formatach (VCD w stylu Intel, CSV w stylu AMD Vivado ILA),
+bez zegara, z innymi nazwami niż w symulacji i z jednym celowo błędnym wynikiem."""
 import os
 import random
 import sys
 
 random.seed(1)
 N, LAT = 1000, 2
-WINDOWS = [(50, 64), (300, 128), (700, 100)]   # (od cyklu, liczba próbek) - osobne nagrania
+WINDOWS = [(50, 64), (300, 128), (700, 100)]   # (od cyklu, liczba próbek) - osobne nagrania HW
 BAD = 357
 
 
@@ -49,11 +50,24 @@ with open(out + '/sim.vcd', 'w') as f:
         f.write('#%d\n0!\n' % (t + 5000))
     f.write('#%d\n' % (N * 10000))
 
-# ---- SignalTap: próbka k = wartość widziana na zboczu (czyli stan z cyklu poprzedniego)
-os.makedirs(out + '/stp', exist_ok=True)
-for n, (STP_FROM, STP_LEN) in enumerate(WINDOWS, 1):
-    with open(out + '/stp/capture_%d.vcd' % n, 'w') as f:
-        f.write('$date today $end\n$version Quartus SignalTap $end\n$timescale 1ps $end\n'
+# ---- nagrania z analizatora logicznego (HW): próbka k = wartość widziana na zboczu,
+#      czyli stan z cyklu poprzedniego. Dwa formaty, jak u różnych producentów:
+#      VCD z nazwami w stylu Intel (encja:instancja|sygnał, szyna out_p rozbita na bity)
+#      i CSV w stylu AMD Vivado ILA (ścieżki ze '/', wiersz "Radix", wartości HEX).
+os.makedirs(out + '/hw', exist_ok=True)
+
+
+def hw_samples(start, length):
+    for k in range(length):
+        s = dict(cyc[start + k - 1])
+        if start + k - 1 == BAD and s['out_valid']:
+            s['p'] ^= 0x40                                   # błąd "sprzętowy"
+        yield k, s
+
+
+def write_vcd(path, start, length):
+    with open(path, 'w') as f:
+        f.write('$date today $end\n$version logic analyzer export $end\n$timescale 1ps $end\n'
                 '$scope module top $end\n'
                 '$var wire 1 A top_inst:u0|mul:u_mul|in_valid $end\n'
                 '$var wire 8 B top_inst:u0|mul:u_mul|in_a [7:0] $end\n'
@@ -62,12 +76,29 @@ for n, (STP_FROM, STP_LEN) in enumerate(WINDOWS, 1):
         for i in range(16):
             f.write('$var wire 1 P%d top_inst:u0|mul:u_mul|out_p[%d] $end\n' % (i, i))
         f.write('$var wire 20 E top_inst:u0|acc:u_acc|acc [19:0] $end\n$upscope $end\n$enddefinitions $end\n')
-        for k in range(STP_LEN):
-            s = dict(cyc[STP_FROM + k - 1])
-            if STP_FROM + k - 1 == BAD and s['out_valid']:
-                s['p'] ^= 0x40                                   # błąd "sprzętowy"
-            f.write('#%d\n%dA\nb%s B\nb%s C\n%dD\n' % (k * 20000, s['in_valid'], b(s['a'], 8), b(s['b'], 8), s['out_valid']))
+        for k, s in hw_samples(start, length):
+            f.write('#%d\n%dA\nb%s B\nb%s C\n%dD\n' % (k * 20000, s['in_valid'], b(s['a'], 8), b(s['b'], 8),
+                                                     s['out_valid']))
             for i, ch in enumerate(reversed(b(s['p'], 16))):
                 f.write('%sP%d\n' % (ch, i))
             f.write('b%s E\n' % b(s['acc'], 20))
+
+
+def write_csv(path, start, length):
+    cols = ['u_top/u_mul/in_valid', 'u_top/u_mul/in_a[7:0]', 'u_top/u_mul/in_b[7:0]',
+            'u_top/u_mul/out_valid', 'u_top/u_mul/out_p[15:0]', 'u_top/u_acc/acc[19:0]']
+    with open(path, 'w') as f:
+        f.write('Sample in Buffer,Sample in Window,TRIGGER,' + ','.join(cols) + '\n')
+        f.write('Radix - UNSIGNED,UNSIGNED,UNSIGNED,BINARY,HEX,HEX,BINARY,HEX,HEX\n')
+        for k, s in hw_samples(start, length):
+            f.write('%d,%d,%d,%d,%02X,%02X,%d,%04X,%05X\n' % (
+                k, k, int(k == 0), s['in_valid'], s['a'] & 0xFF, s['b'] & 0xFF, s['out_valid'],
+                s['p'] & 0xFFFF, s['acc']))
+
+
+for n, (start, length) in enumerate(WINDOWS, 1):
+    if n == len(WINDOWS):
+        write_csv(out + '/hw/capture_%d.csv' % n, start, length)
+    else:
+        write_vcd(out + '/hw/capture_%d.vcd' % n, start, length)
 print('cykl z błędem:', BAD, 'out_valid =', cyc[BAD]['out_valid'])

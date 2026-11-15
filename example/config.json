@@ -14,7 +14,7 @@
     },
     {
       "name": "acc_out",
-      "valid": { "sim": "u_mul.out_valid", "stp": "u_mul.out_valid" },
+      "valid": { "sim": "u_mul.out_valid", "hw": "u_mul.out_valid" },
       "fields": { "acc": "u_acc.acc" }
     }
   ]

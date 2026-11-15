@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-vcdcmp - porównuje transakcje na interfejsach modułów zapisane w VCD
-z symulacji i z SignalTap (Quartus).
+vcdcmp - porównuje transakcje na interfejsach modułów FPGA zarejestrowane
+w symulacji i w sprzęcie przez wbudowany analizator logiczny (niezależnie od
+producenta: Intel SignalTap, AMD Vivado ILA, Lattice Reveal, Microchip Identify
+i inne - każdy, który eksportuje VCD lub CSV).
 
 Transakcja = cykl, w którym valid==1 (i ready==1, jeśli podano ready).
 Z każdej transakcji brane są wartości pól (operandy / wynik). Sekwencje
-transakcji z obu plików są wyrównywane i porównywane, niezależnie od tego,
-w którym miejscu symulacji SignalTap złapał swoje okno.
+transakcji z obu źródeł są wyrównywane i porównywane, niezależnie od tego,
+w którym miejscu symulacji analizator złapał swoje okno.
 
 Użycie:
-  python3 vcdcmp.py --list plik.vcd
-  python3 vcdcmp.py config.json sim.vcd stp.vcd [--csv roznice.csv]
-  python3 vcdcmp.py config.json sim.vcd katalog_stp/ [--merge-out scalony.vcd]
+  python3 vcdcmp.py --list plik.vcd|plik.csv
+  python3 vcdcmp.py config.json sim.vcd hw.vcd [--csv roznice.csv]
+  python3 vcdcmp.py config.json sim.vcd katalog_hw/ [--merge-out scalony.vcd]
 
-Można podać kilka plików STP i/lub katalogów z plikami *.vcd. Każdy plik to
-osobne nagranie (okno SignalTap) - jest wyrównywane do symulacji niezależnie,
+Nagrania HW: pliki .vcd/.csv i/lub katalogi z nimi. Każdy plik to osobne
+nagranie (okno analizatora) - jest wyrównywane do symulacji niezależnie,
 a wyniki są łączone w jeden raport. --merge-out zapisuje wszystkie nagrania
-jeden za drugim w jednym pliku VCD (np. do obejrzenia w GTKWave).
+jedno za drugim w jednym pliku VCD (np. do obejrzenia w GTKWave).
 """
 import argparse
 import csv
@@ -33,7 +35,7 @@ from functools import reduce
 
 UNITS = {'s': 10**15, 'ms': 10**12, 'us': 10**9, 'ns': 10**6, 'ps': 10**3, 'fs': 1}
 SPLIT_RE = re.compile(r'[|./\\]')
-RANGE_RE = re.compile(r'^(.*?)\s*\[(\d+)(?::(\d+))?\]$')
+RANGE_RE = re.compile(r'^(.*?)\s*\[(\d+)(?:(?::|\.\.)(\d+))?\]$')    # [7:0], [7..0], [3]
 NORM = str.maketrans('uwlh-UWLHXZ', 'xx01xxx01xz')
 WILD = set('xz?')
 
@@ -41,10 +43,10 @@ WILD = set('xz?')
 # ---------------------------------------------------------------- nazwy
 
 def split_parts(s):
-    """'top:u0|mul:u_mul|p' / 'tb.dut.u_mul.p' -> ['u0', 'u_mul', 'p']"""
+    """'top:u0|mul:u_mul|p' / 'u_top/u_mul/p' / 'tb.dut.u_mul.p' -> [..., 'u_mul', 'p']"""
     out = []
     for p in SPLIT_RE.split(s):
-        if ':' in p:                      # Quartus: encja:instancja
+        if ':' in p:                      # np. Intel: encja:instancja
             p = p.rsplit(':', 1)[1]
         p = p.strip().lower()
         if p:
@@ -87,6 +89,8 @@ def pad(v, w):
 
 
 class VCD:
+    untimed = False      # True: czas = numer próbki (CSV bez osi czasu)
+
     def __init__(self, fname):
         self.fname = fname
         self.ts = 1          # fs na jednostkę czasu pliku
@@ -223,7 +227,7 @@ class VCD:
         return out
 
     def sample_grid(self, period=None):
-        """Siatka próbek dla pliku bez zegara (typowy eksport SignalTap)."""
+        """Siatka próbek dla pliku bez zegara (typowy eksport analizatora logicznego)."""
         times = sorted({t for v in self.vars for t in v.times} | {self.tmax})
         if not times:
             return []
@@ -231,6 +235,96 @@ class VCD:
             deltas = [b - a for a, b in zip(times, times[1:]) if b > a]
             period = reduce(math.gcd, deltas) if deltas else 1
         return list(range(times[0], times[-1] + 1, period))
+
+
+INDEX_COL_RE = re.compile(r'^(sample.*|time.*|trigger|index|#|nr|lp\.?)$', re.I)
+RADIX = {'HEX': 'hex', 'HEXADECIMAL': 'hex', 'BIN': 'bin', 'BINARY': 'bin', 'UNSIGNED': 'dec',
+         'DEC': 'dec', 'DECIMAL': 'dec', 'SIGNED': 'sdec', 'OCT': 'oct', 'OCTAL': 'oct'}
+
+
+def csv_value(s, radix):
+    """Wartość z komórki CSV -> bity ('0101', z x/z) albo liczba całkowita."""
+    s = s.strip().replace('_', '')
+    if not s:
+        return 'x'
+    low = s.lower()
+    m = re.match(r"^\d*'s?([hbdo])(.*)$", low)            # styl Verilog: 16'h00ff
+    if m:
+        radix, low = {'h': 'hex', 'b': 'bin', 'd': 'dec', 'o': 'oct'}[m.group(1)], m.group(2)
+    elif radix is None and low.startswith('0x'):         # prefiksy tylko gdy radix nieznany
+        radix, low = 'hex', low[2:]                       # (HEX '0B80' to nie binarne '80')
+    elif radix is None and low.startswith('0b'):
+        radix, low = 'bin', low[2:]
+    elif radix is None and low.endswith('h'):
+        radix, low = 'hex', low[:-1]
+    radix = radix or 'hex'
+    if radix == 'bin':
+        return low.translate(NORM)
+    if radix in ('hex', 'oct'):
+        n = 4 if radix == 'hex' else 3
+        return ''.join(c * n if c in 'xz' else format(int(c, 16 if n == 4 else 8), '0%db' % n)
+                       for c in low.translate(NORM))
+    if 'x' in low or 'z' in low:
+        return 'x'
+    return int(low)
+
+
+class CSVWave(VCD):
+    """Eksport CSV z analizatora logicznego (np. Vivado ILA, SignalTap): wiersz = próbka.
+    Kolumny indeksu (Sample in Buffer, Time, TRIGGER...) są pomijane, opcjonalny wiersz
+    'Radix - HEX,...' (Vivado) określa format wartości; bez niego - radix domyślny."""
+    untimed = True
+
+    def __init__(self, fname, radix=None):
+        self.fname, self.ts, self.vars, self.tmax = fname, UNITS['ns'], [], 0
+        with open(fname, newline='', encoding='utf-8-sig', errors='replace') as f:
+            text = f.read()
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=',;\t')
+        except csv.Error:
+            dialect = csv.excel
+        rows = [r for r in csv.reader(text.splitlines(), dialect) if any(c.strip() for c in r)]
+        if len(rows) < 2:
+            raise ValueError('%s: plik CSV bez danych' % fname)
+        header = [h.strip() for h in rows[0]]
+        data = rows[1:]
+        radixes = [radix] * len(header)
+        if data[0] and data[0][0].strip().lower().startswith('radix'):
+            for i, c in enumerate(data[0][:len(header)]):
+                r = re.sub(r'(?i)^radix\s*-\s*', '', c.strip()).upper()
+                radixes[i] = RADIX.get(r, radix)
+            data = data[1:]
+        cols = [i for i, h in enumerate(header) if h and not INDEX_COL_RE.match(h)]
+        if not cols:
+            raise ValueError('%s: brak kolumn z sygnałami' % fname)
+        self.tmax = len(data) - 1
+        for i in cols:
+            base, rng = split_range(header[i])
+            try:
+                vals = [csv_value(r[i] if i < len(r) else '', radixes[i]) for r in data]
+            except ValueError as e:
+                raise ValueError('%s: kolumna "%s": niepoprawna wartość (%s) - sprawdź --radix'
+                                 % (fname, header[i], e))
+            if rng:
+                w = rng[0] - rng[1] + 1
+            else:
+                bits = [len(v) for v in vals if isinstance(v, str)]
+                nums = [v for v in vals if not isinstance(v, str)]
+                w = max(bits + [max(abs(v) for v in nums).bit_length() + any(v < 0 for v in nums)] if nums else bits + [1])
+            hi, lo = rng if rng else (w - 1, 0)
+            v = Var(tuple(split_parts(base)), hi, lo, w, rng is not None or w > 1)
+            prev = None
+            for t, x in enumerate(vals):
+                x = pad(x, w) if isinstance(x, str) else format(x & ((1 << w) - 1), '0%db' % w)
+                if x != prev:
+                    v.times.append(t)
+                    v.values.append(x)
+                    prev = x
+            self.vars.append(v)
+
+
+def load_wave(path, radix=None):
+    return CSVWave(path, radix) if path.lower().endswith('.csv') else VCD(path)
 
 
 def sample_var(v, times, pre):
@@ -250,7 +344,7 @@ def sample_var(v, times, pre):
 
 
 class SigRef:
-    """Sygnał (może składać się z rozbitych bitów, np. p[0]..p[15] z SignalTap)."""
+    """Sygnał (może składać się z rozbitych bitów, np. p[0]..p[15] z eksportu analizatora)."""
 
     def __init__(self, name, vars_, rng):
         self.name, self.vars = name, vars_
@@ -277,21 +371,21 @@ class SigRef:
         return vals
 
 
-# ---------------------------------------------------------------- wiele plików STP
+# ---------------------------------------------------------------- wiele plików HW
 
 def natural_key(s):
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r'(\d+)', s)]
 
 
-def expand_stp(paths):
-    """Pliki i katalogi -> posortowana (naturalnie) lista plików .vcd."""
+def expand_hw(paths):
+    """Pliki i katalogi -> posortowana (naturalnie) lista plików .vcd/.csv."""
     out = []
     for p in paths:
         if os.path.isdir(p):
-            found = sorted((os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith('.vcd')),
+            found = sorted((os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(('.vcd', '.csv'))),
                            key=lambda f: natural_key(os.path.basename(f)))
             if not found:
-                raise ValueError('katalog %s nie zawiera plików .vcd' % p)
+                raise ValueError('katalog %s nie zawiera plików .vcd ani .csv' % p)
             out += found
         elif os.path.isfile(p):
             out.append(p)
@@ -372,7 +466,7 @@ class Field:
             spec = {'signal': spec}
         self.name = name
         self.sim = spec.get('sim', spec.get('signal'))
-        self.stp = spec.get('stp', spec.get('signal'))
+        self.hw = spec.get('hw', spec.get('stp', spec.get('signal')))   # "stp" - stara nazwa
         self.signed = spec.get('signed', defaults.get('signed', False))
         self.frac = spec.get('frac', defaults.get('frac', 0))
 
@@ -396,6 +490,8 @@ class Field:
 def side_name(spec, side):
     if spec is None or isinstance(spec, str):
         return spec
+    if side == 'hw' and 'hw' not in spec and 'stp' in spec:      # "stp" - stara nazwa
+        side = 'stp'
     return spec.get(side, spec.get('signal'))
 
 
@@ -412,23 +508,23 @@ class Interface:
         self.valid = d.get('valid')
         self.ready = d.get('ready')
         self.clock = d.get('clock', glob.get('sim_clock'))
-        self.stp_clock = d.get('stp_clock', glob.get('stp_clock'))
+        self.hw_clock = d.get('hw_clock', d.get('stp_clock', glob.get('hw_clock', glob.get('stp_clock'))))
         if self.prefix is None:
             if self.valid is None or 'fields' not in d:
                 raise KeyError('interfejs %s: podaj "prefix" albo "valid" i "fields"' % self.name)
             self.fields = [Field(n, s, d) for n, s in d['fields'].items()]
 
-    def resolve(self, sim_vcd, stp_vcds):
+    def resolve(self, sim_vcd, hw_vcds):
         """Tryb prefiksu: znajduje valid/ready/pola wśród sygnałów zaczynających się od prefiksu."""
         if self.prefix is None:
             return
         d = self.d
-        ps, pt = side_name(self.prefix, 'sim'), side_name(self.prefix, 'stp')
+        ps, pt = side_name(self.prefix, 'sim'), side_name(self.prefix, 'hw')
         in_sim = sim_vcd.find_prefix(ps)
-        in_stp = [v.find_prefix(pt) for v in stp_vcds]
-        common_stp = set.intersection(*map(set, in_stp))
+        in_hw = [v.find_prefix(pt) for v in hw_vcds]
+        common_hw = set.intersection(*map(set, in_hw))
         skip = list(d.get('exclude', [])) + list(SKIP_NAMES)
-        names = [n for n in in_sim if n in common_stp and not any(fnmatch.fnmatch(n, p) for p in skip)]
+        names = [n for n in in_sim if n in common_hw and not any(fnmatch.fnmatch(n, p) for p in skip)]
         given = [side_name(d.get(k), 'sim') for k in ('valid', 'ready')]
 
         def full(n):          # pełna nazwa (z kropką/kreską) zamiast końcówki po prefiksie
@@ -450,8 +546,8 @@ class Interface:
 
         valid = pick(d.get('valid'), VALID_NAMES, 'valid', True)
         ready = pick(d.get('ready'), READY_NAMES, 'ready', False)
-        self.valid = valid if full(valid) else {'sim': ps + valid, 'stp': pt + valid}
-        self.ready = (ready if full(ready) else {'sim': ps + ready, 'stp': pt + ready}) if ready else None
+        self.valid = valid if full(valid) else {'sim': ps + valid, 'hw': pt + valid}
+        self.ready = (ready if full(ready) else {'sim': ps + ready, 'hw': pt + ready}) if ready else None
 
         spec = d.get('fields')
         if spec is None:
@@ -463,16 +559,16 @@ class Interface:
             if n not in names:
                 raise LookupError('interfejs %s: pole "%s%s" nie występuje w obu plikach' % (self.name, ps, n))
             opts = {'signed': opts, 'frac': 0} if isinstance(opts, bool) else dict(opts)
-            opts.update(sim=ps + n, stp=pt + n)
+            opts.update(sim=ps + n, hw=pt + n)
             self.fields.append(Field(n, opts, d))
         if not self.fields:
             raise LookupError('interfejs %s: brak pól danych dla prefiksu "%s"' % (self.name, ps))
 
-        only_sim = [n for n in in_sim if n not in common_stp and not any(fnmatch.fnmatch(n, p) for p in skip)]
+        only_sim = [n for n in in_sim if n not in common_hw and not any(fnmatch.fnmatch(n, p) for p in skip)]
         print('   %-12s prefiks %s -> valid=%s%s, pola: %s%s' % (
             self.name, ps, side_name(valid, 'sim'), ', ready=%s' % side_name(ready, 'sim') if ready else '',
             ', '.join(f.name for f in self.fields),
-            '  (pominięte, brak w STP: %s)' % ', '.join(only_sim) if only_sim else ''))
+            '  (pominięte, brak w HW: %s)' % ', '.join(only_sim) if only_sim else ''))
 
 
 # ---------------------------------------------------------------- ekstrakcja
@@ -482,7 +578,7 @@ class Side:
 
     def __init__(self, vcd, side, edge, period):
         self.vcd, self.side, self.edge, self.period = vcd, side, edge, period
-        self.seg = os.path.basename(vcd.fname) if side == 'stp' else None
+        self.seg = os.path.basename(vcd.fname) if side == 'hw' else None
         self._times, self._cache = {}, {}
 
     def times(self, clock):
@@ -501,7 +597,7 @@ class Side:
         return self._cache[k]
 
     def transactions(self, itf):
-        clock = itf.clock if self.side == 'sim' else itf.stp_clock
+        clock = itf.clock if self.side == 'sim' else itf.hw_clock
         if self.side == 'sim' and not clock:
             raise LookupError('interfejs %s: podaj "clock" lub globalne "sim_clock"' % itf.name)
         times, _ = self.times(clock)
@@ -526,7 +622,7 @@ class Txn:
 # ---------------------------------------------------------------- porównanie
 
 def align(T, S):
-    """Najlepsze przesunięcie k (STP[i] <-> SIM[i+k]) - głosowanie po równych transakcjach."""
+    """Najlepsze przesunięcie k (HW[i] <-> SIM[i+k]) - głosowanie po równych transakcjach."""
     index = defaultdict(list)
     for j, s in enumerate(S):
         index[s].append(j)
@@ -545,13 +641,13 @@ def align(T, S):
 
 
 def compare(itf, T, S):
-    res = {'name': itf.name, 'n_stp': len(T), 'n_sim': len(S), 'ok': 0, 'issues': []}
+    res = {'name': itf.name, 'n_hw': len(T), 'n_sim': len(S), 'ok': 0, 'issues': []}
     if not T:
-        res['note'] = 'brak transakcji w SignalTap'
+        res['note'] = 'brak transakcji w nagraniu HW'
         return res
     if not S:
         res['note'] = 'brak transakcji w symulacji'
-        res['issues'] = [('tylko STP', t, None) for t in T]
+        res['issues'] = [('tylko HW', t, None) for t in T]
         return res
     k, votes, tie = align([t.key for t in T], [s.key for s in S])
     res['offset'], res['votes'], res['tie'] = k, votes, tie
@@ -571,10 +667,10 @@ def compare(itf, T, S):
         for a, b in zip(tt[:n], ss[:n]):
             issues.append(('różnica', a, b))
         for a in tt[n:]:
-            issues.append(('tylko STP', a, None))
+            issues.append(('tylko HW', a, None))
         for b in ss[n:]:
             if tag == 'insert' and i1 >= len(T) and i1 >= last_t:
-                continue                # nadmiar okna symulacji za końcem nagrania STP
+                continue                # nadmiar okna symulacji za końcem nagrania HW
             issues.append(('tylko SIM', None, b))
     return res
 
@@ -589,57 +685,62 @@ def fmt_time(t, ts):
     return '%d fs' % fs
 
 
-def describe(itf, kind, a, b, sim_ts, stp_ts):
+def describe(itf, kind, a, b, sim_ts, hw_ts):
     loc = []
     if a is not None:
-        loc.append('STP %s próbka %d (%s)' % (a.seg, a.idx, fmt_time(a.time, stp_ts[a.seg])))
+        t = ' (%s)' % fmt_time(a.time, hw_ts[a.seg]) if hw_ts[a.seg] else ''
+        loc.append('HW %s próbka %d%s' % (a.seg, a.idx, t))
     if b is not None:
         loc.append('SIM cykl %d (%s)' % (b.idx, fmt_time(b.time, sim_ts)))
     head = '[%s] %s' % (kind, ' <-> '.join(loc))
     if kind == 'różnica':
-        diffs = ['%s: STP=%s SIM=%s' % (f.name, f.fmt(x), f.fmt(y))
+        diffs = ['%s: HW=%s SIM=%s' % (f.name, f.fmt(x), f.fmt(y))
                  for f, x, y in zip(itf.fields, a.key, b.key) if x != y]
         return head + '\n        ' + '; '.join(diffs)
     t = a or b
     return head + '\n        ' + ', '.join('%s=%s' % (f.name, f.fmt(x)) for f, x in zip(itf.fields, t.key))
 
 
-def cmd_list(fname):
-    v = VCD(fname)
-    print('%s  (timescale %s, %d sygnałów)' % (fname, fmt_time(1, v.ts), len(v.vars)))
+def cmd_list(fname, radix):
+    v = load_wave(fname, radix)
+    print('%s  (%s, %d sygnałów)' % (fname, 'CSV, %d próbek' % (v.tmax + 1) if v.untimed
+                                     else 'timescale ' + fmt_time(1, v.ts), len(v.vars)))
     for var in v.vars:
         print('  %-60s  %3d bit  %d zmian' % (var.name, var.width, len(var.times)))
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Porównanie transakcji na interfejsach: symulacja vs SignalTap.')
+    ap = argparse.ArgumentParser(description='Porównanie transakcji na interfejsach: symulacja vs nagranie z analizatora logicznego w FPGA.')
     ap.add_argument('files', nargs='+',
-                    help='[config.json] sim.vcd STP [STP ...]  - STP to plik .vcd lub katalog z plikami .vcd '
-                         '(z --list: pliki .vcd)')
-    ap.add_argument('--itf', action='append', default=[], metavar='NAZWA=PREFIKS[,PREFIKS_STP]',
+                    help='[config.json] sim.vcd HW [HW ...]  - HW to nagranie z analizatora logicznego '
+                         '(.vcd/.csv) lub katalog z nagraniami (z --list: dowolne pliki)')
+    ap.add_argument('--itf', action='append', default=[], metavar='NAZWA=PREFIKS[,PREFIKS_HW]',
                     help='interfejs zdefiniowany prefiksem, np. --itf mul_in=u_mul.in_ (można powtarzać)')
     ap.add_argument('--clk', help='zegar w symulacji (zamiast "sim_clock" w configu)')
     ap.add_argument('--signed', action='store_true', help='pola interfejsów z --itf są liczbami ze znakiem')
     ap.add_argument('--list', action='store_true', help='wypisz sygnały z pliku VCD i zakończ')
     ap.add_argument('--edge', choices=('rise', 'fall'), default='rise', help='zbocze zegara (domyślnie rise)')
-    ap.add_argument('--stp-period', type=int, help='okres próbkowania STP w jednostkach jego timescale '
-                                                   '(domyślnie wykrywany automatycznie)')
-    ap.add_argument('--merge-out', help='zapisz scalone nagrania STP do jednego pliku VCD')
+    ap.add_argument('--hw-period', '--stp-period', dest='hw_period', type=int,
+                    help='okres próbkowania nagrań HW (VCD) w jednostkach ich timescale '
+                                                        '(domyślnie wykrywany automatycznie)')
+    ap.add_argument('--radix', type=str.upper, choices=sorted(RADIX),
+                    help='format wartości w wejściowych CSV bez wiersza "Radix" (domyślnie HEX)')
+    ap.add_argument('--merge-out', help='zapisz scalone nagrania HW do jednego pliku VCD')
     ap.add_argument('--max', type=int, default=20, help='ile rozbieżności wypisać na interfejs (domyślnie 20)')
     ap.add_argument('--csv', help='zapisz wszystkie rozbieżności do pliku CSV')
     a = ap.parse_args()
 
     try:
         if a.list:
-            for f in expand_stp(a.files):
-                cmd_list(f)
+            for f in expand_hw(a.files):
+                cmd_list(f, a.radix)
             return 0
         files, cfg = list(a.files), {}
         if files[0].lower().endswith('.json'):
             with open(files.pop(0), encoding='utf-8') as f:
                 cfg = json.load(f)
         if len(files) < 2:
-            ap.error('podaj: [config.json] sim.vcd STP [STP ...]')
+            ap.error('podaj: [config.json] sim.vcd HW [HW ...]')
         if a.clk:
             cfg['sim_clock'] = a.clk
         defs = list(cfg.get('interfaces', []))
@@ -648,56 +749,56 @@ def main():
             if not pref:
                 ap.error('--itf: oczekiwano NAZWA=PREFIKS, jest "%s"' % spec)
             sp, _, tp = pref.partition(',')
-            defs.append({'name': name, 'prefix': {'sim': sp, 'stp': tp or sp}, 'signed': a.signed})
+            defs.append({'name': name, 'prefix': {'sim': sp, 'hw': tp or sp}, 'signed': a.signed})
         if not defs:
             ap.error('brak interfejsów - podaj config.json albo --itf NAZWA=PREFIKS')
         itfs = [Interface(d, cfg) for d in defs]
 
-        # 1. scalenie nagrań SignalTap
-        stp_files = expand_stp(files[1:])
-        stp_vcds = [VCD(p) for p in stp_files]
-        print('== SignalTap: %d plik(ów) ==' % len(stp_vcds))
-        for v in stp_vcds:
-            print('   %-40s %d próbek' % (os.path.basename(v.fname), len(v.sample_grid(a.stp_period))))
-        if len({os.path.basename(v.fname) for v in stp_vcds}) != len(stp_vcds):
-            raise ValueError('pliki STP z różnych katalogów mają te same nazwy - zmień nazwy')
+        # 1. scalenie nagrań HW
+        hw_files = expand_hw(files[1:])
+        hw_vcds = [load_wave(p, a.radix) for p in hw_files]
+        print('== Nagrania HW: %d plik(ów) ==' % len(hw_vcds))
+        for v in hw_vcds:
+            print('   %-40s %d próbek' % (os.path.basename(v.fname), len(v.sample_grid(a.hw_period))))
+        if len({os.path.basename(v.fname) for v in hw_vcds}) != len(hw_vcds):
+            raise ValueError('pliki HW z różnych katalogów mają te same nazwy - zmień nazwy')
         if a.merge_out:
-            write_merged(stp_vcds, a.merge_out)
+            write_merged(hw_vcds, a.merge_out)
             print('   scalony plik: %s' % a.merge_out)
 
         # 2. porównanie - każde nagranie wyrównywane do symulacji osobno
-        sim = Side(VCD(files[0]), 'sim', a.edge, None)
+        sim = Side(load_wave(files[0], a.radix), 'sim', a.edge, None)
         if any(i.prefix is not None for i in itfs):
             print('\n== Interfejsy z prefiksów ==')
         for itf in itfs:
-            itf.resolve(sim.vcd, stp_vcds)
-        stps = [Side(v, 'stp', a.edge, a.stp_period or cfg.get('stp_period')) for v in stp_vcds]
+            itf.resolve(sim.vcd, hw_vcds)
+        hws = [Side(v, 'hw', a.edge, a.hw_period or cfg.get('hw_period', cfg.get('stp_period'))) for v in hw_vcds]
         results = []
         for itf in itfs:
             S = sim.transactions(itf)
-            results.append((itf, len(S), [(st.seg, compare(itf, st.transactions(itf), S)) for st in stps]))
+            results.append((itf, len(S), [(st.seg, compare(itf, st.transactions(itf), S)) for st in hws]))
     except (LookupError, ValueError, KeyError, OSError) as e:
         sys.stdout.flush()
         print('BŁĄD: %s' % e, file=sys.stderr)
         return 2
 
     sts = sim.vcd.ts
-    pts = {st.seg: st.vcd.ts for st in stps}
-    order = {st.seg: i for i, st in enumerate(stps)}
+    pts = {st.seg: None if st.vcd.untimed else st.vcd.ts for st in hws}
+    order = {st.seg: i for i, st in enumerate(hws)}
     rows, first, bad = [], [], False
     for itf, n_sim, segs in results:
         issues = [x for _, r in segs for x in r['issues']]
         ok = sum(r['ok'] for _, r in segs)
-        n_stp = sum(r['n_stp'] for _, r in segs)
+        n_hw = sum(r['n_hw'] for _, r in segs)
         cnt = Counter(k for k, _, _ in issues)
-        print('\n== %s ==  SIM: %d transakcji, STP: %d transakcji w %d nagraniach'
-              % (itf.name, n_sim, n_stp, len(segs)))
-        print('   zgodne: %d   różne: %d   tylko STP: %d   tylko SIM: %d'
-              % (ok, cnt['różnica'], cnt['tylko STP'], cnt['tylko SIM']))
+        print('\n== %s ==  SIM: %d transakcji, HW: %d transakcji w %d nagraniach'
+              % (itf.name, n_sim, n_hw, len(segs)))
+        print('   zgodne: %d   różne: %d   tylko HW: %d   tylko SIM: %d'
+              % (ok, cnt['różnica'], cnt['tylko HW'], cnt['tylko SIM']))
         for seg, r in segs:
             line = '   %-28s ' % seg
             if 'offset' in r:
-                line += 'STP#0 <-> SIM#%-6d %d/%d zgodnych' % (r['offset'], r['ok'], r['n_stp'])
+                line += 'HW#0 <-> SIM#%-6d %d/%d zgodnych' % (r['offset'], r['ok'], r['n_hw'])
                 if r['tie']:
                     line += '  UWAGA: kilka równie dobrych przesunięć - dane okresowe?'
             if 'note' in r:
@@ -708,13 +809,13 @@ def main():
             print('   ' + describe(itf, kind, x, y, sts, pts))
         if len(issues) > a.max:
             print('   ... i %d więcej (--max / --csv)' % (len(issues) - a.max))
-        stp_hits = sorted((x for _, x, _ in issues if x is not None), key=lambda t: (order[t.seg], t.time))
-        if stp_hits:
-            h = stp_hits[0]
+        hw_hits = sorted((x for _, x, _ in issues if x is not None), key=lambda t: (order[t.seg], t.time))
+        if hw_hits:
+            h = hw_hits[0]
             first.append(((order[h.seg], h.time), itf.name, h))
         for kind, x, y in issues:
             rows.append([itf.name, kind, x.seg if x else '',
-                         x.idx if x else '', fmt_time(x.time, pts[x.seg]) if x else '',
+                         x.idx if x else '', fmt_time(x.time, pts[x.seg]) if x and pts[x.seg] else '',
                          y.idx if y else '', fmt_time(y.time, sts) if y else ''] +
                         ['%s|%s' % (f.fmt(x.key[n]) if x else '', f.fmt(y.key[n]) if y else '')
                          for n, f in enumerate(itf.fields)])
@@ -723,15 +824,16 @@ def main():
     if not bad:
         print('   Wszystkie transakcje zgodne.')
     elif first:
-        print('   Pierwsze rozbieżności wg czasu SignalTap (najwcześniejsza wskazuje podejrzany moduł):')
+        print('   Pierwsze rozbieżności wg czasu nagrań HW (najwcześniejsza wskazuje podejrzany moduł):')
         for _, name, h in sorted(first, key=lambda e: e[0]):
-            print('     %-24s %s próbka %d (%s)' % (name, h.seg, h.idx, fmt_time(h.time, pts[h.seg])))
+            print('     %-24s %s próbka %d%s' % (name, h.seg, h.idx,
+                                                   ' (%s)' % fmt_time(h.time, pts[h.seg]) if pts[h.seg] else ''))
 
     if a.csv:
         with open(a.csv, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
-            w.writerow(['interfejs', 'typ', 'stp_plik', 'stp_probka', 'stp_czas', 'sim_cykl', 'sim_czas',
-                        'pola (STP|SIM)...'])
+            w.writerow(['interfejs', 'typ', 'hw_plik', 'hw_probka', 'hw_czas', 'sim_cykl', 'sim_czas',
+                        'pola (HW|SIM)...'])
             w.writerows(rows)
         print('   CSV: %s' % a.csv)
     return 1 if bad else 0
