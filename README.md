@@ -259,8 +259,8 @@ Output (in the `-o` directory):
 
 Entry types in the untested-lines list:
 
-- `nie wykonana` (not executed) – the statement never ran,
-- `gałąź N%` (branch N%) – the condition did not take all of its values,
+- `not executed` – the statement never ran,
+- `branch N%` – the condition did not take all of its values,
 - `toggle` – (VHDL) not all bits of a port or signal toggled 0→1→0.
 
 ### Installing the tools
